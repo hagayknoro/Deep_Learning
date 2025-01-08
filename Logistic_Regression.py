@@ -1,105 +1,90 @@
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score
-import numpy as np
+from torch.utils.data import DataLoader, Dataset
 
-# Step 1: Load the data
-file_path = 'tweets.csv'  # Change this to your file path
-data = pd.read_csv(file_path)
+# Sample Dataset Loading (Replace with actual dataset)
+import pandas as pd
 
-# Ensure 'text' and 'target' columns exist
-data = data[['text', 'target']].dropna()
+data = pd.read_csv("disaster_tweets.csv")  # Replace with your dataset path
+texts = data['text'].fillna("missing").values
+labels = data['target'].values
 
-# Step 2: Convert text to numeric vectors (Bag of Words)
-vectorizer = CountVectorizer(max_features=10000)  # Limit to 5000 most common words
-X = vectorizer.fit_transform(data['text']).toarray()
-y = data['target'].values
+# Preprocessing: Convert text to features using CountVectorizer
+vectorizer = CountVectorizer(max_features=5000)
+X = vectorizer.fit_transform(texts).toarray()
 
-# Define the number of folds for cross-validation
-k_folds = 5
-kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+# Train-Test Split
+X_train, X_test, y_train, y_test = train_test_split(X, labels, test_size=0.2, random_state=42)
 
-# Initialize lists to store metrics for each fold
-accuracy_list = []
-precision_list = []
-recall_list = []
+# Convert to PyTorch Dataset
+class TweetDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = torch.tensor(features, dtype=torch.float32)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
 
-# First, split the data into train and temp (validation + test) sets
-X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.4, random_state=42)
+    def __len__(self):
+        return len(self.labels)
 
-# Then, split the temp set into validation and test sets
-X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+    def __getitem__(self, idx):
+        return self.features[idx], self.labels[idx]
 
-# Cross-validation loop
-for train_index, val_index in kf.split(X):
-    # Split the data into training and validation sets
-    X_train, X_val = X[train_index], X[val_index]
-    y_train, y_val = y[train_index], y[val_index]
+train_dataset = TweetDataset(X_train, y_train)
+test_dataset = TweetDataset(X_test, y_test)
 
-    # Convert data to PyTorch tensors
-    X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
-    X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-    # Step 4: Define the logistic regression model
-    class LogisticRegressionModel(nn.Module):
-        def __init__(self, input_dim):
-            super(LogisticRegressionModel, self).__init__()
-            self.linear = nn.Linear(input_dim, 1)
-            self.sigmoid = nn.Sigmoid()
-        
-        def forward(self, x):
-            return self.sigmoid(self.linear(x))
+# Logistic Regression Model
+class LogisticRegressionModel(nn.Module):
+    def __init__(self, input_dim):
+        super(LogisticRegressionModel, self).__init__()
+        self.linear = nn.Linear(input_dim, 1)
 
-    # Initialize the model
-    input_dim = X_train.shape[1]
-    model = LogisticRegressionModel(input_dim)
+    def forward(self, x):
+        return torch.sigmoid(self.linear(x))
 
-    # Loss function and optimizer
-    criterion = nn.BCELoss()  # Binary Cross-Entropy Loss
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
+# Model Initialization
+input_dim = X_train.shape[1]
+model = LogisticRegressionModel(input_dim)
 
-    # Step 5: Train the model
-    epochs = 1000
-    for epoch in range(epochs):
-        model.train()
+# Loss and Optimizer
+criterion = nn.BCELoss()
+optimizer = optim.Adam(model.parameters(), lr=0.01)
+
+# Training Loop
+epochs = 10
+for epoch in range(epochs):
+    model.train()
+    epoch_loss = 0
+    for features, labels in train_loader:
         optimizer.zero_grad()
-        outputs = model(X_train_tensor)
-        loss = criterion(outputs, y_train_tensor)
+        outputs = model(features).squeeze()
+        loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+        epoch_loss += loss.item()
 
-    # Step 6: Evaluate the model
-    model.eval()
-    with torch.no_grad():
-        predictions = model(X_val_tensor)
-        predictions = (predictions >= 0.5).float()  # Threshold at 0.5
+    print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss / len(train_loader):.4f}")
 
-    # Convert predictions and true labels to numpy for evaluation
-    y_pred = predictions.numpy().flatten()
-    y_true = y_val_tensor.numpy().flatten()
+# Evaluation
+model.eval()
+y_true, y_pred = [], []
 
-    # Metrics
-    accuracy = accuracy_score(y_true, y_pred)
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
+with torch.no_grad():
+    for features, labels in test_loader:
+        outputs = model(features).squeeze()
+        predictions = (outputs >= 0.5).float()
+        y_true.extend(labels.tolist())
+        y_pred.extend(predictions.tolist())
 
-    # Store metrics
-    accuracy_list.append(accuracy)
-    precision_list.append(precision)
-    recall_list.append(recall)
+accuracy = accuracy_score(y_true, y_pred)
+precision = precision_score(y_true, y_pred)
+recall = recall_score(y_true, y_pred)
 
-# Calculate average metrics across all folds
-avg_accuracy = np.mean(accuracy_list)
-avg_precision = np.mean(precision_list)
-avg_recall = np.mean(recall_list)
-
-print("\nCross-Validation Results:")
-print(f"Average Accuracy: {avg_accuracy:.2f}")
-print(f"Average Precision: {avg_precision:.2f}")
-print(f"Average Recall: {avg_recall:.2f}")
+print(f"Accuracy: {accuracy:.4f}")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
