@@ -65,7 +65,7 @@ for train_index, val_index in kf.split(X):
     optimizer = optim.Adam(model.parameters(), lr=0.01)
 
     # Step 5: Train the model
-    epochs = 100
+    epochs = 1000
     for epoch in range(epochs):
         model.train()
         optimizer.zero_grad()
